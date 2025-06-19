@@ -1,108 +1,174 @@
 import time
-from pprint import pprint 
-from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM,
-                         NFS_V3, NFS3_OK, DATA_SYNC)
+import threading
+from queue import Queue
+from pyNfsClient import Mount, NFSv3, MNT3_OK, NFS3_OK, DATA_SYNC
 
 host = "10.70.10.110"
 mount_path = "/srv/nfs/sharedfarid"
 
-auth = {"flavor": 1,
-        "machine_name": "sim-08",
-        "uid": 6120,
-        "gid": 30142,
-        "aux_gid": list(),
-        }
-
+auth = {
+    "flavor": 1,
+    "machine_name": "sim-08",
+    "uid": 6120,
+    "gid": 30142,
+    "aux_gid": list(),
+}
 
 dir_name = "dir8"
 reps = 10
 CREATE_UNCHECKED = 0  # From NFSv3 spec
-TIMEOUT=1
-
-# portmap = Portmap(host, timeout=3600)
-# portmap.connect()
-# mnt_port = portmap.getport(Mount.program, Mount.program_version)
+TIMEOUT = 1
 
 mnt_port = 2049
+nfs_port = 2049
 
-mount = Mount(host=host, auth=auth, port=mnt_port, timeout=TIMEOUT)
-mount.connect()
 
-print("mounting ...")
-mnt_res = mount.mnt(mount_path, auth)
+class SafeNFSClient:
+    """Wrapper around NFSv3 that reconnects on timeouts."""
 
-if mnt_res["status"] == MNT3_OK:
-    root_fh = mnt_res["mountinfo"]["fhandle"]
-    nfs3 = None
+    def __init__(self, host, mount_path, dir_name, auth, mnt_port, nfs_port, timeout):
+        self.host = host
+        self.mount_path = mount_path
+        self.dir_name = dir_name
+        self.auth = auth
+        self.mnt_port = mnt_port
+        self.nfs_port = nfs_port
+        self.timeout = timeout
+        self.mount = None
+        self.nfs = None
+        self.root_fh = None
+        self.dir_fh = None
+        self.reconnect()
+
+    def _call_with_timeout(self, func, *args, **kwargs):
+        result = Queue()
+
+        def target():
+            try:
+                result.put((True, func(*args, **kwargs)))
+            except Exception as exc:  # pragma: no cover - best effort logging
+                result.put((False, exc))
+
+        t = threading.Thread(target=target, daemon=True)
+        t.start()
+        t.join(self.timeout)
+        if t.is_alive():
+            print("[WARN] NFS operation timed out; remounting")
+            self.reconnect()
+            return None
+        success, res = result.get()
+        if not success:
+            print(f"[WARN] NFS operation raised {res}; remounting")
+            self.reconnect()
+            return None
+        return res
+
+    def reconnect(self):
+        if self.nfs:
+            try:
+                self.nfs.disconnect()
+            except Exception:
+                pass
+        if self.mount:
+            try:
+                self.mount.umnt()
+            except Exception:
+                pass
+            try:
+                self.mount.disconnect()
+            except Exception:
+                pass
+
+        self.mount = Mount(host=self.host, auth=self.auth, port=self.mnt_port, timeout=self.timeout)
+        self.mount.connect()
+        mnt_res = self.mount.mnt(self.mount_path, self.auth)
+        if mnt_res["status"] != MNT3_OK:
+            raise RuntimeError(f"Mount failed: {mnt_res['status']}")
+        self.root_fh = mnt_res["mountinfo"]["fhandle"]
+
+        self.nfs = NFSv3(self.host, self.nfs_port, timeout=self.timeout, auth=self.auth)
+        self.nfs.connect()
+
+        # Ensure the working directory exists and fetch its handle
+        self._call_with_timeout(self.nfs.mkdir, self.root_fh, self.dir_name, mode=0o777, auth=self.auth)
+        lookup = self._call_with_timeout(self.nfs.lookup, self.root_fh, self.dir_name, self.auth)
+        if lookup and lookup["status"] == NFS3_OK:
+            self.dir_fh = lookup["resok"]["object"]["data"]
+        else:
+            raise RuntimeError("Could not obtain directory handle")
+
+    def call(self, func, *args, **kwargs):
+        return self._call_with_timeout(func, *args, **kwargs)
+
+    def cleanup(self):
+        if self.nfs:
+            try:
+                self.nfs.disconnect()
+            except Exception:
+                pass
+        if self.mount:
+            try:
+                self.mount.umnt()
+            except Exception:
+                pass
+            try:
+                self.mount.disconnect()
+            except Exception:
+                pass
+
+
+def main():
+    client = SafeNFSClient(host, mount_path, dir_name, auth, mnt_port, nfs_port, TIMEOUT)
     try:
-        # nfs_port = portmap.getport(NFS_PROGRAM, NFS_V3)
-        nfs_port = 2049 
-        
-        print("connecting ...")
-        nfs3 = NFSv3(host, nfs_port, timeout=TIMEOUT, auth=auth)
-        nfs3.connect()
-
-        print("mkdir ...")
-        # Create the directory (ignore error if already exists)
-        mkdir_res = nfs3.mkdir(root_fh, dir_name, mode=0o777, auth=auth)
-
-        # Even if it fails, attempt lookup
-        print("file lookup ...")
-        dir_lookup = nfs3.lookup(root_fh, dir_name, auth)
-        if dir_lookup["status"] != NFS3_OK:
-            print(f"Directory lookup failed: {dir_lookup['status']}")
-            raise Exception("Cannot find or create target directory")
-        dir_fh = dir_lookup["resok"]["object"]["data"]
-
-        # Create 100 files with specific content
         for x in range(1, reps + 1):
             filename = f"file{x}.txt"
-            file_content = f"this is file number {x}"
             new_filename = f"renamed_file{x}.txt"
+            file_content = f"this is file number {x}"
 
-            # 1. Create the file
             print("create ...")
-            create_res = nfs3.create(dir_fh, filename, CREATE_UNCHECKED, auth=auth)
-            if create_res["status"] != NFS3_OK:
-                print(f"Create failed for {filename}: {create_res['status']}")
+            create_res = client.call(client.nfs.create, client.dir_fh, filename, CREATE_UNCHECKED, auth=auth)
+            if not create_res or create_res["status"] != NFS3_OK:
+                print(f"Create failed for {filename}")
                 continue
 
-            # 2. Rename the file
             print("rename ...")
-            rename_res = nfs3.rename(
-                dir_fh, filename,
-                dir_fh, new_filename,
-                auth=auth
+            rename_res = client.call(
+                client.nfs.rename,
+                client.dir_fh,
+                filename,
+                client.dir_fh,
+                new_filename,
+                auth=auth,
             )
-            if rename_res["status"] != NFS3_OK:
-                print(f"Rename failed for {filename}: {rename_res['status']}")
+            if not rename_res or rename_res["status"] != NFS3_OK:
+                print(f"Rename failed for {filename}")
                 continue
 
             print("renamed lookup ...")
-            # 3. Lookup the file handle for the new name
-            renamed_lookup = nfs3.lookup(dir_fh, new_filename, auth)
-            if renamed_lookup["status"] != NFS3_OK:
-                print(f"Lookup failed for {new_filename}: {renamed_lookup['status']}")
+            renamed_lookup = client.call(client.nfs.lookup, client.dir_fh, new_filename, auth)
+            if not renamed_lookup or renamed_lookup["status"] != NFS3_OK:
+                print(f"Lookup failed for {new_filename}")
                 continue
             file_fh = renamed_lookup["resok"]["object"]["data"]
 
             print("write ...")
-            # 4. Write to the renamed file
-            write_res = nfs3.write(file_fh, offset=0, count=len(file_content),
-                                content=file_content, stable_how=DATA_SYNC, auth=auth)
-            if write_res["status"] != NFS3_OK:
-                print(f"Write failed for {new_filename}: {write_res['status']}")
+            write_res = client.call(
+                client.nfs.write,
+                file_fh,
+                offset=0,
+                count=len(file_content),
+                content=file_content,
+                stable_how=DATA_SYNC,
+                auth=auth,
+            )
+            if not write_res or write_res["status"] != NFS3_OK:
+                print(f"Write failed for {new_filename}")
 
             print("waiting ...")
             time.sleep(1)
-
     finally:
-        if nfs3:
-            nfs3.disconnect()
-        mount.umnt()
-        mount.disconnect()
-        # portmap.disconnect()
-else:
-    print(f"Mount failed: {mnt_res['status']}")
-    mount.disconnect()
-    # portmap.disconnect()
+        client.cleanup()
+
+
+if __name__ == "__main__":
+    main()
