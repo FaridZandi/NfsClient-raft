@@ -93,6 +93,7 @@ class RPC(object):
             logger.exception("Exception during RPC.request:")
             print(f"[ERROR] Exception in RPC.request: {e}")
 
+        print(f"[VERBOSE] ------------------------------------------------------------------")
         return data
 
     def connect(self):
