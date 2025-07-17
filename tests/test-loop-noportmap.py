@@ -3,7 +3,8 @@ from pprint import pprint
 from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM,
                          NFS_V3, NFS3_OK, DATA_SYNC)
 
-host = "10.70.10.110"
+# host = "10.70.10.110"
+host = "localhost"  # Use localhost for testing
 
 # get server number from command line argument
 import sys
@@ -11,9 +12,9 @@ if len(sys.argv) > 1:
     server_number = sys.argv[1]
 else:
     server_number = 0
-    
+
 if server_number == "0":
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared", 2049, 2049
+    mount_path, mnt_port, nfs_port = "/home/faridzandi/srv/nfs/shared", 2049, 2049
 elif server_number == "1":  
     mount_path, mnt_port, nfs_port = "/srv/nfs/shared1", 2050, 2050
 elif server_number == "2":
@@ -32,7 +33,7 @@ print(f"Using mount path: {mount_path}, mnt_port: {mnt_port}, nfs_port: {nfs_por
 dir_name = "dir7"
 
 auth = {"flavor": 1,
-        "machine_name": "sim-08",
+        "machine_name": "localhost",
         "uid": 6120,
         "gid": 30142,
         "aux_gid": list(),
@@ -50,6 +51,7 @@ mount = Mount(host=host, auth=auth, port=mnt_port, timeout=3600)
 mount.connect()
 mnt_res = mount.mnt(mount_path, auth)
 
+
 if mnt_res["status"] == MNT3_OK:
     root_fh = mnt_res["mountinfo"]["fhandle"]
     print(f"Root file handle: {root_fh}")
@@ -63,7 +65,7 @@ if mnt_res["status"] == MNT3_OK:
         # Create the directory (ignore error if already exists)
         mkdir_res = nfs3.mkdir(root_fh, dir_name, mode=0o777, auth=auth)
 
-        raise Exception("Arbitrary exception to make the test shorter") 
+        # raise Exception("Arbitrary exception to make the test shorter") 
         
         # Even if it fails, attempt lookup
         dir_lookup = nfs3.lookup(root_fh, dir_name, auth)
