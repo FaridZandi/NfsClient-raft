@@ -1,51 +1,36 @@
+import os 
 import time
 from pprint import pprint 
 from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM,
                          NFS_V3, NFS3_OK, DATA_SYNC)
 
-# host = "10.70.10.110"
+
+# get the home directory of the user running the script
+home_dir = os.path.expanduser("~")
+mount_path = "{}/srv/nfs/shared".format(home_dir) 
+dir_name = "dir7"
+mnt_port = 2049
+nfs_port = 2049
+user_id = os.getuid()
+group_id = os.getgid()
+
 host = "localhost"  # Use localhost for testing
+file_count = 10  # Number of files to create
+loop_delay = 0.1  # Delay between file creations in seconds
 
-# get server number from command line argument
-import sys
-if len(sys.argv) > 1:
-    server_number = sys.argv[1]
-else:
-    server_number = 0
-
-if server_number == "0":
-    mount_path, mnt_port, nfs_port = "/home/faridzandi/srv/nfs/shared", 2049, 2049
-elif server_number == "1":  
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared1", 2050, 2050
-elif server_number == "2":
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared2", 2051, 2051
-elif server_number == "3":
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared3", 2052, 2052
-elif server_number == "4":
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared4", 2053, 2053
-elif server_number == "5":  
-    mount_path, mnt_port, nfs_port = "/srv/nfs/shared5", 2054, 2054
-else: 
-    exit(f"Invalid server number: {server_number}. Use 0-5.")
-
+print(f"Using user ID: {user_id}, group ID: {group_id}")    
 print(f"Using mount path: {mount_path}, mnt_port: {mnt_port}, nfs_port: {nfs_port}")        
 
-dir_name = "dir7"
 
-auth = {"flavor": 1,
-        "machine_name": "localhost",
-        "uid": 6120,
-        "gid": 30142,
-        "aux_gid": list(),
-        }
-
+auth = {
+    "flavor": 1,
+    "machine_name": host,
+    "uid": user_id,  # Use the user ID from the environment
+    "gid": group_id,  # Use the group ID from the environment 
+    "aux_gid": list(),
+}
 
 CREATE_UNCHECKED = 0  # From NFSv3 spec
-
-# portmap = Portmap(host, timeout=3600)
-# portmap.connect()
-# mnt_port = portmap.getport(Mount.program, Mount.program_version)
-
 
 mount = Mount(host=host, auth=auth, port=mnt_port, timeout=3600)
 mount.connect()
@@ -75,8 +60,8 @@ if mnt_res["status"] == MNT3_OK:
         dir_fh = dir_lookup["resok"]["object"]["data"]
         print("directory file handle:", dir_fh) 
 
-        # Create 100 files with specific content
-        for x in range(1, 5):
+        # Create some files with specific content
+        for x in range(1, file_count + 1):
             filename = f"file{x}.txt"
             file_content = f"this is file number {x}\n"
 
@@ -84,9 +69,6 @@ if mnt_res["status"] == MNT3_OK:
             if create_res["status"] != NFS3_OK:
                 print(f"Create failed for {filename}: {create_res['status']}")
                 continue
-            
-            # print("create res:")
-            # pprint(create_res)
             
             file_fh = create_res["resok"]["obj"]["handle"]["data"]
             print(file_fh)
@@ -96,15 +78,13 @@ if mnt_res["status"] == MNT3_OK:
             if write_res["status"] != NFS3_OK:
                 print(f"Write failed for {filename}: {write_res['status']}")
 
-            time.sleep(1)
+            time.sleep(loop_delay)
 
     finally:
         if nfs3:
             nfs3.disconnect()
         mount.umnt()
         mount.disconnect()
-        # portmap.disconnect()
 else:
     print(f"Mount failed: {mnt_res['status']}")
     mount.disconnect()
-    # portmap.disconnect()
