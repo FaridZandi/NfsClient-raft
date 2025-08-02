@@ -90,8 +90,10 @@ class RPC(object):
 
             data = data[24:]
         except Exception as e:
-            logger.exception("Exception during RPC.request:")
-            print(f"[ERROR] Exception in RPC.request: {e}")
+            # logger.exception("Exception during RPC.request:")
+            # print(f"[ERROR] Exception in RPC.request: {e}")
+            # still raise the exception to be handled by the caller
+            raise RPCProtocolError(f"Error in RPC request: {e}")
 
         print(f"[VERBOSE] ------------------------------------------------------------------")
         return data
@@ -106,7 +108,7 @@ class RPC(object):
             i = 0
             while True:
                 try:
-                    random_port = randint(10000, 11000)
+                    random_port = randint(10000, 11000) # changed this range to enable non-privileged ports
                     i += 1
                     self.client.bind(('', random_port))
                     self.client_port = random_port
@@ -146,28 +148,27 @@ class RPC(object):
         rpc_response_size = b""
 
         try:
-            logger.debug("[VERBOSE] Waiting to receive RPC response size (4 bytes)...")
-            print("[VERBOSE] Calling recv() for response size")
             while len(rpc_response_size) != 4:
-                rpc_response_size = self.client.recv(4)
-            logger.debug("[VERBOSE] Received response size.")
+                chunk = self.client.recv(4 - len(rpc_response_size))
+                if not chunk:
+                    raise RPCProtocolError("Connection closed by server while reading header")
+                rpc_response_size += chunk
 
             if len(rpc_response_size) != 4:
                 raise RPCProtocolError("incorrect recv response size: %d" % len(rpc_response_size))
             response_size = struct.unpack('!L', rpc_response_size)[0] & 0x7fffffff
 
-            logger.debug(f"[VERBOSE] RPC response size: {response_size} bytes. Now reading full response...")
-            print(f"[VERBOSE] About to read {response_size} bytes in total for the response")
-
             rpc_response = rpc_response_size
             while len(rpc_response) < response_size:
                 chunk_size = response_size - len(rpc_response) + 4
-                print(f"[VERBOSE] Calling recv() for {chunk_size} bytes")
-                rpc_response = rpc_response + self.client.recv(chunk_size)
+                
+                chunk = self.client.recv(chunk_size)
+                if not chunk:
+                    raise RPCProtocolError("Connection closed by server")
+                rpc_response = rpc_response + chunk
 
-            print("[VERBOSE] Full RPC response received.")
-            logger.debug("[VERBOSE] Full RPC response received.")
             return rpc_response
         except Exception as e:
-            logger.exception("Exception during RPC.recv:")
-            print(f"[ERROR] Exception in RPC.recv: {e}")
+            # logger.exception(e)
+            # but still raise the exception to be handled by the caller
+            raise RPCProtocolError(f"Error receiving data: {e}")
