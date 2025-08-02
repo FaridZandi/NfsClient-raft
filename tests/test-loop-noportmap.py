@@ -8,7 +8,7 @@ from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM,
 # get the home directory of the user running the script
 home_dir = os.path.expanduser("~")
 mount_path = "{}/srv/nfs/shared".format(home_dir) 
-dir_name = "dir7"
+dir_name = "dir3"
 mnt_port = 2049
 nfs_port = 2049
 user_id = os.getuid()
@@ -63,8 +63,13 @@ if mnt_res["status"] == MNT3_OK:
         # Create some files with specific content
         for x in range(1, file_count + 1):
             filename = f"file{x}.txt"
-            file_content = f"this is file number {x}\n"
-
+            
+            # file_content = f"this is file number {x}\n"
+            file_content = ""
+            for i in range(1, 10):
+                text = f"this is file number {x}, which is repeated many times. This the repetition number {i}\n"
+                file_content += text
+                
             create_res = nfs3.create(dir_fh, filename, CREATE_UNCHECKED, auth=auth)
             if create_res["status"] != NFS3_OK:
                 print(f"Create failed for {filename}: {create_res['status']}")
