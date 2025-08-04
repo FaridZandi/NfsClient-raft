@@ -92,14 +92,6 @@ class NFSClient:
                     time.sleep(2)
         raise Exception("Failed to connect to NFS server after multiple attempts")
     
-    # def mount_fs(self):
-    #     self.mount = Mount(host=self.host, auth=self.auth, port=self.mnt_port, timeout=TIMEOUT)
-    #     self.mount.connect()
-    #     mnt_res = self.mount.mnt(self.mount_path, self.auth)
-    #     if mnt_res["status"] != MNT3_OK:
-    #         raise Exception(f"Mount failed: {mnt_res['status']}")
-    #     self.root_fh = mnt_res["mountinfo"]["fhandle"]
-
     def mount_fs(self):
         for attempt in range(RETRIES):
             try:
