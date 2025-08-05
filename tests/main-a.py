@@ -1,11 +1,13 @@
 import os
 import time
-from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM, NFS_V3, NFS3_OK, DATA_SYNC)
+from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM, NFS_V3, NFS3_OK, DATA_SYNC, NFS3ERR_EXIST)
 import concurrent.futures
 import functools
 
 TIMEOUT = 5 # Default timeout for NFS operations 
 RETRIES = 20 # Number of retries for NFS operations
+DIR_NAME = "dir5"
+
 
 def timeout(seconds):
     """Decorator to run a function with a timeout using ThreadPoolExecutor."""
@@ -110,13 +112,28 @@ class NFSClient:
                     time.sleep(2)
         raise Exception("Failed to mount NFS after multiple attempts")
     
+    # def ensure_directory(self, dir_name, mode=0o777):
+    #     self.nfs3.mkdir(self.root_fh, dir_name, mode=mode, auth=self.auth)
+    #     dir_lookup = self.nfs3.lookup(self.root_fh, dir_name, self.auth)
+    #     if dir_lookup["status"] != NFS3_OK:
+    #         raise Exception("Cannot find or create target directory")
+    #     self.dir_fh = dir_lookup["resok"]["object"]["data"]
     
-    def ensure_directory(self, dir_name, mode=0o777):
-        self.nfs3.mkdir(self.root_fh, dir_name, mode=mode, auth=self.auth)
+    @nfs_retry(RETRIES)
+    def nfs_mkdir(self, dir_name, mode=0o777, exists_okay=False):
+        mkdir_res = self.nfs3.mkdir(self.root_fh, dir_name, mode=mode, auth=self.auth)
+        if mkdir_res["status"] == NFS3ERR_EXIST and exists_okay:
+            return mkdir_res
+        if mkdir_res["status"] != NFS3_OK:
+            raise Exception(f"mkdir failed for {dir_name}: {mkdir_res['status']}")
+        return mkdir_res
+
+    @nfs_retry(RETRIES)
+    def nfs_lookup_fh(self, dir_name):
         dir_lookup = self.nfs3.lookup(self.root_fh, dir_name, self.auth)
         if dir_lookup["status"] != NFS3_OK:
-            raise Exception("Cannot find or create target directory")
-        self.dir_fh = dir_lookup["resok"]["object"]["data"]
+            raise Exception(f"lookup failed for {dir_name}: {dir_lookup['status']}")
+        return dir_lookup["resok"]["object"]["data"]
 
     # def create_file(self, number):
     #     filename = f"file{number}.txt"
@@ -153,6 +170,7 @@ class NFSClient:
 
         if write_res["status"] != NFS3_OK:
             print(f"Write failed for file{number}.txt: {write_res['status']}")
+            raise Exception(f"Write failed for file{number}.txt: {write_res['status']}")
 
     def cleanup(self):
         if self.nfs3:
@@ -168,7 +186,13 @@ class NFSClient:
             self.mount_fs()
             print(f"Root file handle: {self.root_fh}")
             self.connect_nfs()
-            self.ensure_directory(dir_name)
+            # self.ensure_directory(dir_name)
+            
+            print(f"Creating directory: {dir_name}")
+            self.nfs_mkdir(dir_name, exists_okay=True)
+            
+            print(f"Directory {dir_name} created or already exists")
+            self.dir_fh = self.nfs_lookup_fh(dir_name)
             
             for number in range(1, self.file_count + 1):
                 print(f"Creating file {number} in directory {dir_name}")
@@ -194,4 +218,4 @@ if __name__ == "__main__":
         file_count=10,
         loop_delay=0.1,
     )
-    client.run(dir_name="dir4")
+    client.run(dir_name=DIR_NAME)
