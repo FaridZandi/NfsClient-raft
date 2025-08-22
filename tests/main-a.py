@@ -6,8 +6,9 @@ import functools
 
 TIMEOUT = 5 # Default timeout for NFS operations 
 RETRIES = 20 # Number of retries for NFS operations
-DIR_NAME = "dir5"
-
+FILE_REPS = 3 # Number of repetitions for file content
+FILE_COUNT = 10 # Number of files to create
+DIR_NAME = "dir2" # Directory name to create and use
 
 def timeout(seconds):
     """Decorator to run a function with a timeout using ThreadPoolExecutor."""
@@ -129,10 +130,10 @@ class NFSClient:
         return mkdir_res
 
     @nfs_retry(RETRIES)
-    def nfs_lookup_fh(self, dir_name):
-        dir_lookup = self.nfs3.lookup(self.root_fh, dir_name, self.auth)
+    def nfs_lookup_fh(self, parent, dir_name):
+        dir_lookup = self.nfs3.lookup(parent, dir_name, self.auth)
         if dir_lookup["status"] != NFS3_OK:
-            raise Exception(f"lookup failed for {dir_name}: {dir_lookup['status']}")
+            raise Exception(f"lookup failed for {dir_name} in {parent}: {dir_lookup['status']}")
         return dir_lookup["resok"]["object"]["data"]
 
     # def create_file(self, number):
@@ -179,20 +180,20 @@ class NFSClient:
             self.mount.umnt()
             self.mount.disconnect()
 
+    def setup(self):
+        print(f"Using user ID: {self.user_id}, group ID: {self.group_id}")
+        print(f"Using mount path: {self.mount_path}, mnt_port: {self.mnt_port}, nfs_port: {self.nfs_port}")
+        self.mount_fs()
+        print(f"Root file handle: {self.root_fh}")
+        self.connect_nfs()
+            
     def run(self, dir_name):
         try:
-            print(f"Using user ID: {self.user_id}, group ID: {self.group_id}")
-            print(f"Using mount path: {self.mount_path}, mnt_port: {self.mnt_port}, nfs_port: {self.nfs_port}")
-            self.mount_fs()
-            print(f"Root file handle: {self.root_fh}")
-            self.connect_nfs()
-            # self.ensure_directory(dir_name)
-            
             print(f"Creating directory: {dir_name}")
             self.nfs_mkdir(dir_name, exists_okay=True)
             
             print(f"Directory {dir_name} created or already exists")
-            self.dir_fh = self.nfs_lookup_fh(dir_name)
+            self.dir_fh = self.nfs_lookup_fh(self.root_fh, dir_name)
             
             for number in range(1, self.file_count + 1):
                 print(f"Creating file {number} in directory {dir_name}")
@@ -205,17 +206,74 @@ class NFSClient:
                 else:
                     print(f"Skipping write for file {number} due to creation failure")
         finally:
-            self.cleanup()
+            print("running done.")
+            # self.cleanup()
 
+    def verify_files(self, dir_name):
+        """Verify that files were created and written to correctly."""
+
+        self.dir_fh = self.nfs_lookup_fh(self.root_fh, dir_name)
+        # check if the directory exists 
+        
+        verified = [0] * self.file_count
+        
+        
+        for number in range(1, self.file_count + 1):
+            filename = f"file{number}.txt"
+            print(f"Verifying file {filename} in directory {dir_name}")
+            file_fh = self.nfs_lookup_fh(self.dir_fh, filename)
+
+            if file_fh:
+                print(f"File {filename} found, verifying content")
+                read_res = self.nfs3.read(file_fh, offset=0, auth=self.auth)
+                if read_res["status"] == NFS3_OK:
+                    content = read_res["resok"]["data"]
+                    expected_content = ""
+                    for rep in range(1, self.rep_count + 1):
+                        expected_content += f"this is file number {number}, This the repetition number {rep}\n"
+                    if content.decode() == expected_content:
+                        print(f"File {filename} verified successfully")
+                        verified[number - 1] = 1
+                    else:
+                        print(f"Content mismatch in file {filename}")
+                        verified[number - 1] = 0
+                else:
+                    print(f"Read failed for file {filename}: {read_res['status']}")
+            else:
+                print(f"File {filename} not found in directory {dir_name}")
+        
+        # print in yellow color
+        print("\033[93m" + f"Verification results for directory {dir_name}:")
+        
+        for status in verified:
+            if status == 1:
+                # print(".", end="") in green 
+                print("\033[92m" + "O", end="")
+            else:
+                print("\033[91m" + "X", end="")
+
+        # print("\nVerification complete.")
+        print("\033[93m" + "\nVerification complete.")
+        # Reset color
+        print("\033[0m")
+        
+        
 if __name__ == "__main__":
     home_dir = os.path.expanduser("~")
     mount_path = f"{home_dir}/srv/nfs/shared"
+    dir_name = DIR_NAME  # Use the defined DIR_NAME constant
+    
     client = NFSClient(
         host="localhost",
         mnt_port=2049,
         nfs_port=2049,
         mount_path=mount_path,
-        file_count=10,
-        loop_delay=0.1,
+        file_count=FILE_COUNT,
+        loop_delay=0, # 0.1 
+        rep_count=FILE_REPS,  # Use the defined FILE_REPS constant
     )
-    client.run(dir_name=DIR_NAME)
+    
+    client.setup()
+    # client.run(dir_name=dir_name)
+    client.verify_files(dir_name=dir_name)
+    client.cleanup()
