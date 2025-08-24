@@ -3,11 +3,12 @@ import time
 from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM, NFS_V3, NFS3_OK, DATA_SYNC, NFS3ERR_EXIST)
 import concurrent.futures
 import functools
+import argparse
 
 TIMEOUT = 5 # Default timeout for NFS operations 
 RETRIES = 20 # Number of retries for NFS operations
 FILE_REPS = 3 # Number of repetitions for file content
-FILE_COUNT = 10 # Number of files to create
+FILE_COUNT = 2 # Number of files to create
 DIR_NAME = "dir2" # Directory name to create and use
 
 def timeout(seconds):
@@ -28,18 +29,18 @@ def timeout(seconds):
 
 from functools import wraps
 
-def nfs_retry(RETRIES=3):
+def nfs_retry(retries=3):
     """Decorator to retry NFS operations, reconnecting on failure or exception."""
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
-            for attempt in range(RETRIES):
+            for attempt in range(retries):
                 try:
                     return func(self, *args, **kwargs)
                 except Exception as e:
                     print(f"[ERROR] Exception in {func.__name__} (attempt {attempt+1}): {e}")
                 # Reconnect and retry
-                print(f"Retrying NFS connection for {func.__name__} (attempt {attempt+2}/{RETRIES})...")
+                print(f"Retrying NFS connection for {func.__name__} (attempt {attempt+2}/{retries})...")
                 try:
                     if self.nfs3:
                         self.nfs3.disconnect()
@@ -47,7 +48,7 @@ def nfs_retry(RETRIES=3):
                     pass
                 
                 self.connect_nfs()
-            print(f"Failed to execute {func.__name__} after {RETRIES} retries.")
+            print(f"Failed to execute {func.__name__} after {retries} retries.")
             return None
         return wrapper
     return decorator
@@ -245,6 +246,8 @@ class NFSClient:
         # print in yellow color
         print("\033[93m" + f"Verification results for directory {dir_name}:")
         
+        all_passed = all(status == 1 for status in verified)
+        
         for status in verified:
             if status == 1:
                 # print(".", end="") in green 
@@ -257,23 +260,62 @@ class NFSClient:
         # Reset color
         print("\033[0m")
         
+        if all_passed:
+            print("CLIENT: All files verified successfully.")
         
 if __name__ == "__main__":
     home_dir = os.path.expanduser("~")
-    mount_path = f"{home_dir}/srv/nfs/shared"
-    dir_name = DIR_NAME  # Use the defined DIR_NAME constant
+    default_mount_path = os.path.join(home_dir, "srv/nfs/shared")
     
-    client = NFSClient(
-        host="localhost",
-        mnt_port=2049,
-        nfs_port=2049,
-        mount_path=mount_path,
-        file_count=FILE_COUNT,
-        loop_delay=0, # 0.1 
-        rep_count=FILE_REPS,  # Use the defined FILE_REPS constant
+    parser = argparse.ArgumentParser(
+        description="NFS client workload generator/validator"
     )
-    
+    # Flags for the constants at the top
+    parser.add_argument("--timeout", type=int, default=TIMEOUT,
+                        help=f"RPC timeout (s). Default: {TIMEOUT}")
+    parser.add_argument("--retries", type=int, default=RETRIES,
+                        help=f"Number of retries. Default: {RETRIES}")
+    parser.add_argument("--file-reps", type=int, default=FILE_REPS,
+                        help=f"Repetitions per file. Default: {FILE_REPS}")
+    parser.add_argument("--file-count", type=int, default=FILE_COUNT,
+                        help=f"Number of files to create. Default: {FILE_COUNT}")
+    parser.add_argument("--dir-name", default=DIR_NAME,
+                        help=f"Target directory name. Default: {DIR_NAME}")
+
+    # (Optional but handy) operational flags you might want anyway
+    parser.add_argument("--host", default="localhost", help="NFS server host")
+    parser.add_argument("--mnt-port", type=int, default=2049, help="mountd port")
+    parser.add_argument("--nfs-port", type=int, default=2049, help="nfsd port")
+    parser.add_argument("--mount-path", default=default_mount_path, help="Export path to mount")
+    parser.add_argument("--loop-delay", type=float, default=0.0, help="Sleep between file writes (s)")
+    parser.add_argument("--uid", type=int, default=None, help="Override UID for auth")
+    parser.add_argument("--gid", type=int, default=None, help="Override GID for auth")
+
+    args = parser.parse_args()
+
+    # Update module-level constants (keeps simple places reading globals happy)
+    TIMEOUT = args.timeout
+    RETRIES = args.retries
+    FILE_REPS = args.file_reps
+    FILE_COUNT = args.file_count
+    DIR_NAME = args.dir_name
+
+    client = NFSClient(
+        host=args.host,
+        mnt_port=args.mnt_port,
+        nfs_port=args.nfs_port,
+        mount_path=args.mount_path,
+        file_count=FILE_COUNT,
+        loop_delay=args.loop_delay,
+        rep_count=FILE_REPS,
+        user_id=args.uid,
+        group_id=args.gid,
+    )
+    # Make sure methods decorated with @nfs_retry() see the new values
+    client.retries = RETRIES
+    client.timeout = TIMEOUT
+
     client.setup()
-    # client.run(dir_name=dir_name)
-    client.verify_files(dir_name=dir_name)
+    client.run(dir_name=DIR_NAME)
+    client.verify_files(dir_name=DIR_NAME)
     client.cleanup()
