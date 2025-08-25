@@ -5,7 +5,7 @@ import time
 from random import randint
 
 logger = logging.getLogger(__package__)
-logging.basicConfig(level=logging.DEBUG)  # Ensure you see debug logs
+logging.basicConfig(level=logging.CRITICAL)  # Ensure you see critical logs
 
 class RPCProtocolError(Exception):
     pass
@@ -62,7 +62,6 @@ class RPC(object):
 
         try:
             logger.debug(f"RPC.request: Sending request ({len(proto)} bytes)")
-            print(f"[VERBOSE] Sending {len(proto)} bytes to {self.host}:{self.port}")
             self.client.send(proto)
 
             last_fragment = False
@@ -91,16 +90,12 @@ class RPC(object):
             data = data[24:]
         except Exception as e:
             # logger.exception("Exception during RPC.request:")
-            # print(f"[ERROR] Exception in RPC.request: {e}")
             # still raise the exception to be handled by the caller
             raise RPCProtocolError(f"Error in RPC request: {e}")
-
-        print(f"[VERBOSE] ------------------------------------------------------------------")
         return data
 
     def connect(self):
         logger.debug(f"Connecting to {self.host}:{self.port} with timeout {self.timeout}")
-        print(f"[VERBOSE] Connecting to {self.host}:{self.port} with timeout {self.timeout}")
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client.settimeout(self.timeout)
         random_port = None
@@ -113,7 +108,6 @@ class RPC(object):
                     self.client.bind(('', random_port))
                     self.client_port = random_port
                     logger.debug("Port %d occupied" % self.client_port)
-                    print(f"[VERBOSE] Bound to source port {self.client_port}")
                     break
                 except Exception as e:
                     logger.warning(f"Socket port binding with {random_port} failed in loop {i}, try again. {e}")
@@ -123,14 +117,12 @@ class RPC(object):
 
         self.client.connect((self.host, self.port))
         logger.debug(f"Connected to {self.host}:{self.port}")
-        print(f"[VERBOSE] Connected to {self.host}:{self.port}")
         RPC.connections.append(self)
 
     def disconnect(self):
         logger.debug("Disconnecting socket.")
         self.client.close()
         logger.debug("Port %s released" % self.client_port)
-        print(f"[VERBOSE] Disconnected socket at port {self.client_port}")
 
     @classmethod
     def disconnect_all(cls):
@@ -142,7 +134,6 @@ class RPC(object):
             except Exception as e:
                 logger.warning(f"Error disconnecting socket: {e}")
         logger.debug("Disconnect all connecting rpc sockets, amount: %d" % counter)
-        print(f"[VERBOSE] Disconnected all RPC sockets: {counter}")
 
     def recv(self):
         rpc_response_size = b""
