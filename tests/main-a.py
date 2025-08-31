@@ -1,15 +1,20 @@
 import os
 import time
-from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM, NFS_V3, NFS3_OK, DATA_SYNC, NFS3ERR_EXIST)
+from pyNfsClient import (Mount, NFSv3, MNT3_OK, NFS_PROGRAM, NFS_V3, NFS3_OK, DATA_SYNC, NFS3ERR_EXIST, NFS3ERR_NOENT)
 import concurrent.futures
 import functools
 import argparse
 
-TIMEOUT = 5 # Default timeout for NFS operations 
+TIMEOUT = 1 # Default timeout for NFS operations 
 RETRIES = 20 # Number of retries for NFS operations
 FILE_REPS = 3 # Number of repetitions for file content
 FILE_COUNT = 2 # Number of files to create
 DIR_NAME = "dir2" # Directory name to create and use
+RETRY_DELAY = 1 # Delay between retries in seconds
+MODE="exec+verify"
+
+RETRY_FAILED = "RETRY_FAILED"
+SETUP_FAILED = "SETUP_FAILED"
 
 def timeout(seconds):
     """Decorator to run a function with a timeout using ThreadPoolExecutor."""
@@ -39,17 +44,21 @@ def nfs_retry(retries=3):
                     return func(self, *args, **kwargs)
                 except Exception as e:
                     print(f"[ERROR] Exception in {func.__name__} (attempt {attempt+1}): {e}")
+                    
+                    
                 # Reconnect and retry
-                print(f"Retrying NFS connection for {func.__name__} (attempt {attempt+2}/{retries})...")
-                try:
-                    if self.nfs3:
-                        self.nfs3.disconnect()
-                except Exception:
-                    pass
+                self.cleanup()
                 
-                self.connect_nfs()
+                time.sleep(RETRY_DELAY)
+
+                try:
+                    self.setup()
+                except Exception as e:
+                    print(f"[ERROR] Setup failed during retry (attempt {attempt+1}): {e}")
+                    return SETUP_FAILED
+
             print(f"Failed to execute {func.__name__} after {retries} retries.")
-            return None
+            return RETRY_FAILED
         return wrapper
     return decorator
 
@@ -81,45 +90,82 @@ class NFSClient:
         self.dir_fh = None
 
 
-
     def connect_nfs(self):
-        for i in range(RETRIES):
+        for attempt in range(RETRIES):
             try:
-                self.nfs3 = NFSv3(self.host, self.nfs_port, TIMEOUT, auth=self.auth)
+                self.nfs3 = NFSv3(self.host, self.nfs_port, 
+                                  TIMEOUT, auth=self.auth)
                 self.nfs3.connect()
                 print(f"Connected to NFS server at {self.host}:{self.nfs_port}")
                 return
             except Exception as e:
-                print(f"[ERROR] NFS connection attempt {i+1} failed: {e}")
-                if i < RETRIES - 1:
-                    print("Retrying in 2 seconds...")
-                    time.sleep(2)
+                print(f"[ERROR] NFS connection attempt {attempt+1} failed: {e}")
+                if attempt < RETRIES - 1:
+                    print(f"Retrying in {TIMEOUT} seconds...")
+                    time.sleep(TIMEOUT)
         raise Exception("Failed to connect to NFS server after multiple attempts")
     
-    def mount_fs(self):
+    def connect_mount(self):
         for attempt in range(RETRIES):
             try:
-                self.mount = Mount(host=self.host, auth=self.auth, port=self.mnt_port, timeout=TIMEOUT)
+                self.mount = Mount(host=self.host, auth=self.auth, 
+                                   port=self.mnt_port, timeout=TIMEOUT)
                 self.mount.connect()
-                mnt_res = self.mount.mnt(self.mount_path, self.auth)
-                if mnt_res["status"] != MNT3_OK:
-                    raise Exception(f"Mount failed: {mnt_res['status']}")
-                self.root_fh = mnt_res["mountinfo"]["fhandle"]
-                print(f"Mounted NFS at {self.mount_path} with root file handle: {self.root_fh}")
+                print(f"Connected to mount at {self.host}:{self.mnt_port}")
                 return
             except Exception as e:
-                print(f"[ERROR] Mount attempt {attempt+1} failed: {e}")
+                print(f"[ERROR] Mount Connected attempt {attempt+1} failed: {e}")
                 if attempt < RETRIES - 1:
-                    print("Retrying in 2 seconds...")
-                    time.sleep(2)
+                    print(f"Retrying in {TIMEOUT} seconds...")
+                    time.sleep(TIMEOUT)
         raise Exception("Failed to mount NFS after multiple attempts")
+
     
-    # def ensure_directory(self, dir_name, mode=0o777):
-    #     self.nfs3.mkdir(self.root_fh, dir_name, mode=mode, auth=self.auth)
-    #     dir_lookup = self.nfs3.lookup(self.root_fh, dir_name, self.auth)
-    #     if dir_lookup["status"] != NFS3_OK:
-    #         raise Exception("Cannot find or create target directory")
-    #     self.dir_fh = dir_lookup["resok"]["object"]["data"]
+    def setup(self):
+        print(f"Using user ID: {self.user_id}, group ID: {self.group_id}")
+        try:
+            self.connect_mount()
+            self.connect_nfs() 
+        except Exception as e:
+            print(f"Setup failed: {e}")
+        
+    def cleanup(self):
+        try: 
+            if self.nfs3:
+                self.nfs3.disconnect()
+                self.nfs3 = None
+        except Exception as e:
+            print(f"Error during NFS cleanup: {e}")
+            self.nfs3 = None
+            
+        try:
+            if self.mount:
+                self.mount.disconnect()
+                self.mount = None
+        except Exception as e:
+            print(f"Error during mount cleanup: {e}")
+            self.mount = None
+
+                
+    @nfs_retry(RETRIES)
+    def mount_fs(self): 
+        mnt_res = self.mount.mnt(self.mount_path, self.auth)
+        if mnt_res["status"] != MNT3_OK:
+            raise Exception(f"Mount failed: {mnt_res['status']}")
+        self.root_fh = mnt_res["mountinfo"]["fhandle"]
+        print(f"Mounted NFS at {self.mount_path} with root file handle: {self.root_fh}")
+    
+    
+    # intentionally left out the decorator. see comment below 
+    def unmount(self):
+        if self.mount:
+            # sometimes, we get reconnected to a different replica, which doesn't know about the mount operation
+            # sent to the initial replica, which causes the unmount operation to fail, which is not a big issue.
+            # Doesn't seem necessary to retry unmounting in this case, but still a problem. 
+            try:
+                self.mount.umnt()
+            except Exception as e:
+                print("Unmount Failed. Skipping retries for now.")
     
     @nfs_retry(RETRIES)
     def nfs_mkdir(self, dir_name, mode=0o777, exists_okay=False):
@@ -130,22 +176,16 @@ class NFSClient:
             raise Exception(f"mkdir failed for {dir_name}: {mkdir_res['status']}")
         return mkdir_res
 
+
     @nfs_retry(RETRIES)
     def nfs_lookup_fh(self, parent, dir_name):
         dir_lookup = self.nfs3.lookup(parent, dir_name, self.auth)
+        print(f"Lookup result for {dir_name} with results {dir_lookup["status"]}")
+        if dir_lookup["status"] == NFS3ERR_NOENT: 
+            return NFS3ERR_NOENT
         if dir_lookup["status"] != NFS3_OK:
             raise Exception(f"lookup failed for {dir_name} in {parent}: {dir_lookup['status']}")
         return dir_lookup["resok"]["object"]["data"]
-
-    # def create_file(self, number):
-    #     filename = f"file{number}.txt"
-    #     create_res = self.nfs3.create(self.dir_fh, filename, 0, auth=self.auth)
-    #     if create_res["status"] != NFS3_OK:
-    #         print(f"Create failed for {filename}: {create_res['status']}")
-    #         return None
-    #     file_fh = create_res["resok"]["obj"]["handle"]["data"]
-    #     print(f"Created {filename}, file handle: {file_fh}")
-    #     return file_fh
 
     @nfs_retry(RETRIES)
     def create_file(self, number):
@@ -174,20 +214,10 @@ class NFSClient:
             print(f"Write failed for file{number}.txt: {write_res['status']}")
             raise Exception(f"Write failed for file{number}.txt: {write_res['status']}")
 
-    def cleanup(self):
-        if self.nfs3:
-            self.nfs3.disconnect()
-        if self.mount:
-            self.mount.umnt()
-            self.mount.disconnect()
+        return 0 
 
-    def setup(self):
-        print(f"Using user ID: {self.user_id}, group ID: {self.group_id}")
-        print(f"Using mount path: {self.mount_path}, mnt_port: {self.mnt_port}, nfs_port: {self.nfs_port}")
-        self.mount_fs()
-        print(f"Root file handle: {self.root_fh}")
-        self.connect_nfs()
-            
+    
+
     def run(self, dir_name):
         try:
             print(f"Creating directory: {dir_name}")
@@ -199,13 +229,27 @@ class NFSClient:
             for number in range(1, self.file_count + 1):
                 print(f"Creating file {number} in directory {dir_name}")
                 file_fh = self.create_file(number)
-
+                
                 if file_fh:
+                    if file_fh == RETRY_FAILED:
+                        print(f"Retry failed for file {number}")
+                        return 1
+                    
                     print(f"Writing to file {number}")
-                    self.write_to_file(file_fh, number)
+                    
+                    res = self.write_to_file(file_fh, number)
+                    if res == RETRY_FAILED: 
+                        print(f"Retry failed for file {number}")
+                        return 1
+                    if res == SETUP_FAILED:
+                        print(f"Setup failed for file {number}")
+                        return 2
+
                     time.sleep(self.loop_delay)
                 else:
                     print(f"Skipping write for file {number} due to creation failure")
+                    
+            return 0 
         finally:
             print("running done.")
             # self.cleanup()
@@ -250,7 +294,6 @@ class NFSClient:
         
         for status in verified:
             if status == 1:
-                # print(".", end="") in green 
                 print("\033[92m" + "O", end="")
             else:
                 print("\033[91m" + "X", end="")
@@ -281,6 +324,10 @@ if __name__ == "__main__":
                         help=f"Number of files to create. Default: {FILE_COUNT}")
     parser.add_argument("--dir-name", default=DIR_NAME,
                         help=f"Target directory name. Default: {DIR_NAME}")
+    parser.add_argument("--retry-delay", type=int, default=RETRY_DELAY,
+                        help=f"Delay between retries (s). Default: {RETRY_DELAY}")
+    parser.add_argument("--mode", default=MODE,
+                        help=f"Operation mode: exec, verify, exec+verify. Default: {MODE}")
 
     # (Optional but handy) operational flags you might want anyway
     parser.add_argument("--host", default="localhost", help="NFS server host")
@@ -299,7 +346,9 @@ if __name__ == "__main__":
     FILE_REPS = args.file_reps
     FILE_COUNT = args.file_count
     DIR_NAME = args.dir_name
-
+    RETRY_DELAY = args.retry_delay
+    MODE = args.mode.lower()
+    
     client = NFSClient(
         host=args.host,
         mnt_port=args.mnt_port,
@@ -316,6 +365,17 @@ if __name__ == "__main__":
     client.timeout = TIMEOUT
 
     client.setup()
-    client.run(dir_name=DIR_NAME)
-    client.verify_files(dir_name=DIR_NAME)
+
+    client.mount_fs()
+    
+    if MODE in ("exec", "exec+verify"):
+         run_res = client.run(dir_name=DIR_NAME)
+         if run_res != 0:
+             print(f"Error occurred during file operations: {run_res}")
+
+    if MODE in ("verify", "exec+verify"):
+        client.verify_files(dir_name=DIR_NAME)
+        
+    client.unmount()
+        
     client.cleanup()
