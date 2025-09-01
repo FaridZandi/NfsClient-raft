@@ -39,9 +39,15 @@ def nfs_retry(retries=3):
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
+
+            starting_time = time.time() 
+            
             for attempt in range(retries):
                 try:
-                    return func(self, *args, **kwargs)
+                    ret = func(self, *args, **kwargs)
+                    finish_time = time.time()
+                    print(f"[INFO] {func.__name__} completed in {finish_time - starting_time:.2f} seconds")
+                    return ret
                 except Exception as e:
                     print(f"[ERROR] Exception in {func.__name__} (attempt {attempt+1}): {e}")
                     
@@ -194,7 +200,8 @@ class NFSClient:
         if create_res["status"] != NFS3_OK:
             raise Exception(f"Create failed for {filename}: {create_res['status']}")
         file_fh = create_res["resok"]["obj"]["handle"]["data"]
-        print(f"Created {filename}, file handle: {file_fh}")
+        # Print file handle in hex for better readability
+        print(f"Created {filename}, file handle: {file_fh.hex() if isinstance(file_fh, bytes) else str(file_fh)}")
         return file_fh
 
     @nfs_retry(RETRIES)
@@ -367,14 +374,18 @@ if __name__ == "__main__":
     client.setup()
 
     client.mount_fs()
-    
+
+    run_res = 0
     if MODE in ("exec", "exec+verify"):
          run_res = client.run(dir_name=DIR_NAME)
          if run_res != 0:
              print(f"Error occurred during file operations: {run_res}")
 
     if MODE in ("verify", "exec+verify"):
-        client.verify_files(dir_name=DIR_NAME)
+        if run_res != 0: 
+            print("run failed")
+        else: 
+            client.verify_files(dir_name=DIR_NAME)
         
     client.unmount()
         
