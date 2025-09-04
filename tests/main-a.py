@@ -371,10 +371,10 @@ if __name__ == "__main__":
     client.retries = RETRIES
     client.timeout = TIMEOUT
 
+    ################################
+
     client.setup()
-
     client.mount_fs()
-
     run_res = 0
     if MODE in ("exec", "exec+verify"):
          run_res = client.run(dir_name=DIR_NAME)
@@ -386,7 +386,5 @@ if __name__ == "__main__":
             print("run failed")
         else: 
             client.verify_files(dir_name=DIR_NAME)
-        
     client.unmount()
-        
     client.cleanup()
