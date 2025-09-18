@@ -202,7 +202,7 @@ class NFSClient:
         file_fh = create_res["resok"]["obj"]["handle"]["data"]
         # Print file handle in hex for better readability
         print(f"Created {filename}, file handle: {file_fh.hex() if isinstance(file_fh, bytes) else str(file_fh)}")
-        return file_fh
+        return filename, file_fh
 
     @nfs_retry(RETRIES)
     def write_to_file(self, file_fh, number):
@@ -233,10 +233,13 @@ class NFSClient:
             print(f"Directory {dir_name} created or already exists")
             self.dir_fh = self.nfs_lookup_fh(self.root_fh, dir_name)
             
+            time.sleep(1)
+            
+            
             for number in range(1, self.file_count + 1):
                 print(f"Creating file {number} in directory {dir_name}")
-                file_fh = self.create_file(number)
-                
+                filename, file_fh = self.create_file(number)
+            
                 if file_fh:
                     if file_fh == RETRY_FAILED:
                         print(f"Retry failed for file {number}")
